@@ -100,24 +100,32 @@ Md5 :: [].{
 
 		## A hasher that has seen no input.
 		empty : () -> Hasher
-		empty = || Hasher.{ state: Compress.initial_state, pending: List.with_capacity(block_bytes), length: 0 }
+		empty = || Hasher.{ state: Compress.initial_state, pending: [], length: 0 }
 
 		## Add bytes to the input.
 		write : Hasher, List(U8) -> Hasher
 		write = |hasher, bytes| {
 			length = hasher.length.plus_wrap(bytes.len())
-			pending = hasher.pending
-			# The bytes after the last whole block are always copied into
-			# `pending`'s own buffer, never kept as a slice of `bytes`, which
-			# would keep everything written alive.
+			# Room for a whole block, so one buffer takes the pending bytes
+			# from write to write. It is allocated on the first write, and
+			# copied when an earlier hasher still uses it. The bytes after the
+			# last whole block are always copied into it, never kept as a
+			# slice of `bytes`, which would keep everything written alive.
+			#
+			# `room` has a name of its own because reading `hasher.pending`
+			# again inside the `reserve` call makes the buffer look shared,
+			# and `reserve` then copies it on every write.
+			room = block_bytes - hasher.pending.len()
+			pending = hasher.pending.reserve(room)
 			if pending.len() + bytes.len() < block_bytes {
 				Hasher.{ state: hasher.state, pending: pending.append_sublist(bytes, { start: 0, len: bytes.len() }), length }
 			} else if pending.is_empty() {
-				absorb(hasher.state, bytes, 0, length)
+				absorb(hasher.state, pending, bytes, 0, length)
 			} else {
 				needed = block_bytes - pending.len()
-				state = Compress.compress(hasher.state, pending.append_sublist(bytes, { start: 0, len: needed }), 0)
-				absorb(state, bytes, needed, length)
+				block = pending.append_sublist(bytes, { start: 0, len: needed })
+				state = Compress.compress(hasher.state, block, 0)
+				absorb(state, block.clear(), bytes, needed, length)
 			}
 		}
 
@@ -146,12 +154,13 @@ digest_bytes = 16
 block_bytes = Compress.block_bytes
 
 ## Compress the whole blocks of `bytes` from `offset` on, and copy the bytes
-## after the last whole block into a buffer of their own for the next write.
-absorb : Compress.State, List(U8), U64, U64 -> Md5.Hasher
-absorb = |state, bytes, offset, length| {
+## after the last whole block into `buffer`, which is empty and has room for
+## them, for the next write.
+absorb : Compress.State, List(U8), List(U8), U64, U64 -> Md5.Hasher
+absorb = |state, buffer, bytes, offset, length| {
 	absorbed = Compress.compress_all(state, bytes, offset)
 	rest = { start: absorbed.offset, len: bytes.len() - absorbed.offset }
-	Md5.Hasher.{ state: absorbed.state, pending: List.with_capacity(block_bytes).append_sublist(bytes, rest), length }
+	Md5.Hasher.{ state: absorbed.state, pending: buffer.append_sublist(bytes, rest), length }
 }
 
 ## The digest of an input whose whole blocks brought the registers to
@@ -351,17 +360,25 @@ expect {
 		and start.finish() == Md5.hash(bytes.take_first(100))
 }
 
-# The pending bytes are kept in a buffer of their own, not in the spare
-# capacity of what was written. That holds with nothing pending before, and
-# with bytes pending that an earlier hasher still uses. Each write gets a list
-# of its own, since a list that is used again afterwards would be copied
-# anyway and hide the difference.
+## `bytes` in a list with room for 1000.
+with_room : List(U8) -> List(U8)
+with_room = |bytes| bytes.fold(List.with_capacity(1000), |list, byte| list.append(byte))
+
+# The pending bytes are kept in a buffer of their own with room for a block,
+# not in what was written or a slice of it, whose capacity is its length.
+# That holds with nothing pending before, and with bytes pending that an
+# earlier hasher still uses, for writes shorter than a block and for writes
+# that complete one. Each write gets a list of its own, since a list that is
+# used again afterwards would be copied anyway and hide the difference.
 expect {
-	fresh = Md5.Hasher.empty().write(List.with_capacity(1000).append(10).append(11))
+	fresh = Md5.Hasher.empty().write(with_room([10, 11]))
 	start = Md5.Hasher.empty().write(counting(10))
-	branch = start.write(List.with_capacity(1000).append(10).append(11))
-	own_buffers = [fresh, branch].all(|hasher| hasher.pending.capacity() < 1000)
-	own_buffers and [fresh, branch, start].map(|hasher| hasher.finish()) == [[10, 11], counting(12), counting(10)].map(Md5.hash)
+	branch = start.write(with_room([10, 11]))
+	fresh_block = Md5.Hasher.empty().write(with_room(counting(70)))
+	branch_block = start.write(with_room(counting(80).drop_first(10)))
+	written = [fresh, branch, fresh_block, branch_block]
+	own_buffers = written.all(|hasher| hasher.pending.capacity() >= block_bytes and hasher.pending.capacity() < 1000)
+	own_buffers and written.append(start).map(|hasher| hasher.finish()) == [[10, 11], counting(12), counting(70), counting(80), counting(10)].map(Md5.hash)
 }
 
 expect Md5.hash_chunks(["mess".to_utf8(), "age ".to_utf8(), [], "digest".to_utf8()].iter()).to_hex() == "f96b697d7cb7938d525a2f31aaf161d0"
