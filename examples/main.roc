@@ -17,7 +17,7 @@ main! = |_args| {
 	# In pieces, as they arrive. Writing them in order gives the digest of
 	# all of them together.
 	pieces = ["The quick brown ", "fox jumps over ", "the lazy dog"]
-	streamed = pieces.fold(Md5.Hasher.empty(), |hasher, piece| hasher.write(piece.to_utf8())).finish()
+	streamed = pieces.fold(Md5.empty(), |md5, piece| md5.write(piece.to_utf8())).finish()
 	Stdout.line!("in pieces: ${streamed.to_hex()}")?
 
 	# A digest from elsewhere, such as a line of an `md5sum` file

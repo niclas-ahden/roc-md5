@@ -22,7 +22,7 @@ main! = |_args| {
 
 	# In pieces, such as a file read a block at a time
 	streamed =
-		Md5.Hasher.empty()
+		Md5.empty()
 			.write("The quick brown ".to_utf8())
 			.write("fox jumps over the lazy dog".to_utf8())
 			.finish()
