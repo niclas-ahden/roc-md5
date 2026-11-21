@@ -5,6 +5,9 @@
 ## included, is a name other packages can use.
 Compress :: [].{
 
+	## RFC 1321's four 32-bit registers A, B, C and D.
+	State : { a : U32, b : U32, c : U32, d : U32 }
+
 	## The size of the blocks MD5 compresses.
 	block_bytes : U64
 	block_bytes = 64
@@ -133,9 +136,6 @@ Compress :: [].{
 		}
 	}
 }
-
-## RFC 1321's four 32-bit registers A, B, C and D.
-State : { a : U32, b : U32, c : U32, d : U32 }
 
 ## Round 1's step, with F(X,Y,Z) = XY v not(X) Z.
 ff : U32, U32, U32, U32, U32, U8, U32 -> U32
